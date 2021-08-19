@@ -9,18 +9,32 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+type Group struct {
+	ID      string           `json:"id"`
+	Name    string           `json:"name"`
+	Owner   Owner            `json:"owner"`
+	Members map[string]*User `json:"members"`
+}
+
+type Owner struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 type Message struct {
-	AuthorID  string    `json:"author_id"`
-	AuthorName	  string    `json:"author_name"`
-	Content   string    `json:"content"`
-	CreatedAt time.Time `json:"created_at"`
+	AuthorID   string    `json:"author_id"`
+	AuthorName string    `json:"author_name"`
+	Content    string    `json:"content"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type User struct {
-	ID     string          `json:"id"`
-	Token  string          `json:"token"`
-	Name   string          `json:"name"`
-	Socket *websocket.Conn `json:"socket"`
+	ID               string          `json:"id"`
+	Token            string          `json:"token"`
+	Name             string          `json:"name"`
+	Messages         []Message       `json:"messages"`
+	MessagesQuantity int             `json:"messages_quantity"`
+	Socket           *websocket.Conn `json:"socket"`
 }
 
 type Packet struct {
@@ -37,14 +51,14 @@ var upgrader = websocket.Upgrader{
 }
 
 var (
-	PacketPacket = "packet_error"
+	PacketPacket              = "packet_error"
 	PacketSendMessage         = "send_message"
 	PacketAuthenticationError = "auth_error"
 
 	PacketReceiveMessage  = "receive_message"
 	PacketSetMessageError = "set_message_error"
-	PacketClose = "close_connection"
-	PacketSetUserData = "set_user_data"
+	PacketClose           = "close_connection"
+	PacketSetUserData     = "set_user_data"
 )
 
 func ManageWebsocketConnections(groupID string, setOwner bool, setOwnerID string, memberName string, w http.ResponseWriter, r *http.Request) interface{} {
@@ -79,7 +93,7 @@ func ManageWebsocketConnections(groupID string, setOwner bool, setOwnerID string
 
 	var member *User
 	if setOwner && len(setOwnerID) >= 1 {
-		if strings.Compare(setOwnerID, group.OwnerID) != 0 {
+		if strings.Compare(setOwnerID, group.Owner.ID) != 0 {
 			socket.WriteJSON(&Packet{
 				Code: PacketAuthenticationError,
 				Data: Map{
@@ -110,13 +124,14 @@ func ManageWebsocketConnections(groupID string, setOwner bool, setOwnerID string
 		}
 
 		member = &User{
-			ID:    setOwnerID,
-			Name: memberName,
-			Token: RandomToken(40),
-			Socket: socket,
+			ID:               setOwnerID,
+			Name:             memberName,
+			Token:            RandomToken(40),
+			MessagesQuantity: 0,
+			Socket:           socket,
 		}
 
-		group.OwnerID = setOwnerID
+		group.Owner.ID = setOwnerID
 		group.Members[setOwnerID] = member
 	} else {
 		if len(memberName) <= 0 {
@@ -124,64 +139,90 @@ func ManageWebsocketConnections(groupID string, setOwner bool, setOwnerID string
 		}
 
 		member = &User{
-			ID:    fmt.Sprintf("%v", RandomID()),
-			Token: RandomToken(40),
-			Name:  memberName,
-			Socket: socket,
+			ID:               fmt.Sprintf("%v", RandomID()),
+			Token:            RandomToken(40),
+			Name:             memberName,
+			MessagesQuantity: 0,
+			Socket:           socket,
 		}
 
 		group.Members[member.ID] = member
 	}
 
-	data := Packet{
+	socket.WriteJSON(Packet{
 		Code: PacketSetUserData,
 		Data: Map{
 			"userID": member.ID,
 			"group": Map{
-				"id": group.ID,
-				"name": group.Name,
-				"owner_id": group.OwnerID,
-				"owner_name": group.Members[group.OwnerID].Name,
-				"online_members": len(group.Members),
+				"id":    group.ID,
+				"name":  group.Name,
+				"owner": group.Owner,
+				"members": []User{
+					User{
+						ID:               group.Members[group.Owner.ID].ID,
+						Name:             group.Members[group.Owner.ID].Name,
+						MessagesQuantity: 0,
+					},
+				},
 			},
 		},
-	}
-
-	socket.WriteJSON(data)
+	})
 
 	ticker := time.NewTicker(5 * time.Second)
 	quit := make(chan struct{})
 	go func() {
 		for {
 			select {
-				case <- ticker.C:
-					err := socket.WriteJSON(data)
+			case <-ticker.C:
 
-					if err != nil {
-						if group.OwnerID == member.ID {
-							for _, member = range group.Members {
-								member.Socket.WriteJSON(&Packet{
-									Code: PacketClose,
-									Data: Map{
-										"closed": true,
-									},
-								})
-							}
+				var publicMembers = make([]*User, 0)
+				for _, member := range group.Members {
+					publicMembers = append(publicMembers, &User{
+						ID:               member.ID,
+						Name:             member.Name,
+						MessagesQuantity: member.MessagesQuantity,
+					})
+				}
+
+				data := Packet{
+					Code: PacketSetUserData,
+					Data: Map{
+						"userID": member.ID,
+						"group": Map{
+							"id":      group.ID,
+							"name":    group.Name,
+							"owner":   group.Owner,
+							"members": publicMembers,
+						},
+					},
+				}
+
+				err := socket.WriteJSON(data)
+				if err != nil {
+					if group.Owner.ID == member.ID {
+						for _, member = range group.Members {
+							member.Socket.WriteJSON(&Packet{
+								Code: PacketClose,
+								Data: Map{
+									"closed": true,
+								},
+							})
 						}
-
-						err := socket.Close()
-						if err != nil {
-							fmt.Println(err)
-						}
-
-						delete(Groups, group.ID)
-						close(quit)
 					}
 
-				case <- quit:
-					ticker.Stop()
-					return
+					err := socket.Close()
+					if err != nil {
+						fmt.Println(err)
+					}
+
+					delete(Groups, group.ID)
+					close(quit)
 				}
+
+			case <-quit:
+				ticker.Stop()
+				return
+			}
 		}
 	}()
 
@@ -197,9 +238,9 @@ func ManageWebsocketConnections(groupID string, setOwner bool, setOwnerID string
 				},
 			})
 
-			continue
+			break
 		}
-		
+
 		if len(packet.Code) <= 0 || packet.Data == nil {
 			continue
 		}
@@ -211,6 +252,8 @@ func ManageWebsocketConnections(groupID string, setOwner bool, setOwnerID string
 
 		packetQueue <- packet
 	}
+
+  return true
 }
 
 func ManagePackets() {
@@ -267,14 +310,7 @@ func SendMessage(packet *Packet) {
 		return
 	}
 
-	var authorListed *User
-	for _, member := range group.Members {
-		if member.ID == id {
-			authorListed = member
-			break
-		}
-	}
-
+	authorListed := group.Members[id]
 	if authorListed == nil {
 		socket.WriteJSON(&Packet{
 			Code: PacketSetMessageError,
@@ -298,14 +334,16 @@ func SendMessage(packet *Packet) {
 	}
 
 	message := Message{
-		AuthorID:  id,
+		AuthorID:   id,
 		AuthorName: authorListed.Name,
-		Content:   content,
-		CreatedAt: time.Now(),
+		Content:    content,
+		CreatedAt:  time.Now(),
 	}
 
+	group.Members[id].Messages = append(group.Members[id].Messages, message)
+	group.Members[id].MessagesQuantity = group.Members[id].MessagesQuantity + 1
+
 	for _, member := range group.Members {
-		fmt.Println(member.Socket)
 		if member.Socket != nil {
 			err := member.Socket.WriteJSON(&Packet{
 				Code: PacketReceiveMessage,
