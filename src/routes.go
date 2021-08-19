@@ -6,13 +6,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type Group struct {
-	ID      string           `json:"id"`
-	Name    string           `json:"name"`
-	OwnerID string           `json:"owner_id"`
-	Members map[string]*User `json:"members"`
-}
-
 func CreateChat(c *gin.Context) {
 	groupName := c.Request.URL.Query().Get("groupName")
 
@@ -29,7 +22,9 @@ func CreateChat(c *gin.Context) {
 	group := &Group{
 		ID:      fmt.Sprintf("%v", RandomID()),
 		Name:    groupName,
-		OwnerID: ownerID,
+		Owner: Owner{
+			ID: ownerID,
+		},
 		Members: make(map[string]*User),
 	}
 
