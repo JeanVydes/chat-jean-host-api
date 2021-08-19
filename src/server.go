@@ -28,7 +28,7 @@ func Server() {
 }
 
 func SetRoutes() {
-	httpService.GET("/api/status", func(c *gin.Context) {
+  httpService.GET("/api/status", func(c *gin.Context) {
 		c.JSON(200, Map{
 			"status": "ok",
 		})
