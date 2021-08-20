@@ -1,8 +1,0 @@
-[build]
-  command = "./bin/main.exe"
-  functions = "functions"
-  publish = "bin"
-
-[build.environment]
-  GO_IMPORT_PATH = "github.com/JeanVydes/chat-jean-host-api"
-  GO111MODULE = "on"
